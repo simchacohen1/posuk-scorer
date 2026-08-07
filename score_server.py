@@ -1,12 +1,19 @@
 """
-Kol Emes - local scoring server.
+Kol Emes - scoring server (cloud transcription version).
 
 Run this once (python score_server.py) and leave the window open in the
-background. It loads Whisper a single time and then waits for recordings
-sent from assignment_recorder.html, scoring each one instantly and logging
-the result to scores_log.csv in this same folder.
+background. It waits for recordings sent from assignment_recorder.html,
+sends each one to OpenAI's hosted Whisper API for transcription, scores
+it, and logs the result to scores_log.csv in this same folder.
 
-Requires:  pip install flask
+Requires:  pip install flask openai
+
+Before starting, set your OpenAI API key as an environment variable
+named OPENAI_API_KEY (do NOT paste the key directly into this file).
+
+  Windows (PowerShell):   setx OPENAI_API_KEY "sk-...."
+                          (then close and reopen the terminal)
+  Mac/Linux:              export OPENAI_API_KEY="sk-...."
 
 Start it, then just open assignment_recorder.html in your browser as usual.
 Leave this terminal window running the whole time students are recording.
@@ -23,7 +30,7 @@ from difflib import SequenceMatcher
 
 from flask import Flask, request, jsonify
 
-import whisper
+from openai import OpenAI
 
 # ---- same expected text + normalization used in score_students.py ----
 expected = {
@@ -141,9 +148,16 @@ def log_result(name, posuk_n, score, transcription):
         writer.writerow([datetime.datetime.now().isoformat(timespec="seconds"),
                           name, posuk_n, score, transcription])
 
-print("Loading Whisper model (medium)... this can take a minute or two.")
-model = whisper.load_model("medium")
-print("Model loaded. Server starting on http://localhost:5005")
+api_key = os.environ.get("OPENAI_API_KEY")
+if not api_key:
+    raise SystemExit(
+        "OPENAI_API_KEY environment variable is not set.\n"
+        "Set it first, then re-run this script. See the instructions at the "
+        "top of score_server.py."
+    )
+
+client = OpenAI(api_key=api_key)
+print("Connected to OpenAI transcription API. Server starting on http://localhost:5005")
 print("Leave this window open. Open assignment_recorder.html in your browser now.")
 
 app = Flask(__name__)
@@ -174,10 +188,8 @@ def score():
 
     try:
         # A blank/near-silent recording (mic didn't capture anything, or the
-        # browser sent a truncated file) produces a 0-length audio tensor,
-        # which crashes Whisper's decoder deep inside model.transcribe with
-        # a RuntimeError. Catch that here and return a friendly error
-        # instead of a raw 500 with no explanation.
+        # browser sent a truncated file) isn't worth sending to the API at
+        # all - catch it here and return a friendly error immediately.
         if os.path.getsize(tmp_path) < 1000:
             return jsonify({
                 "error": "Recording appears empty or too short. Please record again."
@@ -185,14 +197,19 @@ def score():
 
         try:
             prompt_hint = expected.get(posuk_n, "")
-            result = model.transcribe(
-                tmp_path,
-                language="he",
-                initial_prompt=prompt_hint,
-                condition_on_previous_text=False,
-            )
-            transcription = result["text"].strip()
-        except RuntimeError as e:
+            with open(tmp_path, "rb") as audio_fp:
+                result = client.audio.transcriptions.create(
+                    model="whisper-1",
+                    file=audio_fp,
+                    language="he",
+                    prompt=prompt_hint,
+                )
+            transcription = result.text.strip()
+        except Exception as e:
+            # Covers API errors, network errors, or any transcription
+            # failure - student sees a friendly message, you see the real
+            # error in this terminal window.
+            print(f"Transcription error: {e}")
             return jsonify({
                 "error": "Could not process this recording. Please try recording again."
             }), 400
@@ -212,4 +229,5 @@ def score():
     })
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5005)
+    port = int(os.environ.get("PORT", 5005))
+    app.run(host="0.0.0.0", port=port)
