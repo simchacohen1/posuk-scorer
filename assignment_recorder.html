@@ -78,9 +78,11 @@
   #scoreBtn { background: var(--brass); color: #fff; }
 
   #scoreResult {
-    display: none; margin-top: 18px; padding: 18px; border-radius: 12px;
+    min-height: 90px; margin-top: 18px; padding: 18px; border-radius: 12px;
     background: var(--parchment); border: 1px solid var(--line); text-align: center;
+    visibility: hidden;
   }
+  #scoreResult.visible { visibility: visible; }
   #scoreResult .big { font-family: 'Frank Ruhl Libre', serif; font-size: 44px; font-weight: 900; color: var(--green); }
   #scoreResult .low { color: var(--maroon); }
   #scoreResult .transcript { font-size: 15px; color: var(--ink-soft); margin-top: 8px; direction: rtl; }
@@ -207,7 +209,7 @@ function renderDisplay() {
   recordedBlob = null;
   playbackEl.innerHTML = "";
   downloadBar.style.display = "none";
-  scoreResultEl.style.display = "none";
+  scoreResultEl.classList.remove("visible");
   scoreResultEl.innerHTML = "";
   statusEl.textContent = "";
 }
@@ -230,7 +232,7 @@ function startRecording() {
   chunks = [];
   // Starting a fresh recording invalidates whatever score was showing
   // from the previous attempt.
-  scoreResultEl.style.display = "none";
+  scoreResultEl.classList.remove("visible");
   scoreResultEl.innerHTML = "";
   mediaRecorder = new MediaRecorder(stream);
   mediaRecorder.ondataavailable = e => chunks.push(e.data);
@@ -292,7 +294,7 @@ async function submitForScoring() {
 
   scoreBtn.disabled = true;
   scoreBtn.textContent = "Scoring...";
-  scoreResultEl.style.display = "block";
+  scoreResultEl.classList.add("visible");
   scoreResultEl.innerHTML = "<div>Listening to your reading...</div>";
 
   const formData = new FormData();
