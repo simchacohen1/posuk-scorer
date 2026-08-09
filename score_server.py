@@ -83,6 +83,13 @@ def normalize_word(w):
     skeleton instead so the word still participates in scoring."""
     w = w.replace("הויה", "השם")
     w = w.replace("אדני", "השם")
+    # student.html displays/sends the Name as the ה׳ abbreviation (Hebrew geresh,
+    # U+05F3) rather than the spelled-out four letters, since that's the
+    # classroom-standard way to write it. A student reading it aloud says
+    # "Hashem", so without this the word never matched and always showed as
+    # a miss (a red squiggle) even on otherwise-perfect recordings.
+    w = w.replace("ה\u05F3", "השם")
+    w = w.replace("ה'", "השם")  # plain apostrophe, in case that variant is ever used instead
     w = re.sub(r'[^א-ת]', '', w)
     finals = "םןץףך"
     regulars = "מנצפכ"
