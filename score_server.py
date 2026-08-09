@@ -70,19 +70,30 @@ expected = {
 }
 
 def normalize_word(w):
-    """Normalize a single word for comparison (handles common pronunciation/spelling variation)."""
+    """Normalize a single word for comparison (handles common pronunciation/spelling variation).
+
+    Words made mostly/entirely of the "weak" letters (alef/hey/ayin/vav/yud)
+    - e.g. vayehi, vehaya, haya, Y-H-V-H itself - used to collapse to an empty
+    string once those letters were stripped out below, since they can blend
+    or go silent in speech. An empty normalized word was then dropped from
+    scoring entirely instead of counting as a miss (or a match), so words
+    like "vayehi" silently vanished from the results instead of being graded.
+    Fix: only strip the weak letters if something non-empty survives; if
+    stripping would erase the whole word, keep the untouched consonant
+    skeleton instead so the word still participates in scoring."""
     w = w.replace("הויה", "השם")
     w = w.replace("אדני", "השם")
     w = re.sub(r'[^א-ת]', '', w)
     finals = "םןץףך"
     regulars = "מנצפכ"
     w = w.translate(str.maketrans(finals, regulars))
+    skeleton = w  # consonants only, before the weak-letter stripping below
     w = re.sub(r'[תס]', 'S', w)
     w = re.sub(r'[בפ]', 'P', w)
     w = re.sub(r'[חכ]', 'K', w)
-    w = re.sub(r'[אהע]', '', w)
-    w = re.sub(r'[וי]', '', w)
-    return w
+    stripped = re.sub(r'[אהע]', '', w)
+    stripped = re.sub(r'[וי]', '', stripped)
+    return stripped if stripped else skeleton
 
 def score_words_detailed(expected_text, heard_text, word_threshold=0.75):
     """Word-by-word comparison. Returns (score_percent, [(word, is_match), ...])
