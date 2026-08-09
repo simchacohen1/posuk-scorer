@@ -211,7 +211,7 @@ def score():
             # error in this terminal window.
             print(f"Transcription error: {e}")
             return jsonify({
-        	   "error": f"DEBUG: {e}"
+        	   "Could not process this recording. Please try recording again."
             }), 400
     finally:
         os.remove(tmp_path)
