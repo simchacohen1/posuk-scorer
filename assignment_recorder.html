@@ -108,14 +108,20 @@
 </header>
 
 <div class="card">
-  <div class="field">
-    <label for="nameInput">Your Name</label>
-    <input type="text" id="nameInput" placeholder="Type your first name">
+  <div id="setupFields">
+    <div class="field">
+      <label for="nameInput">Your Name</label>
+      <input type="text" id="nameInput" placeholder="Type your first name">
+    </div>
+
+    <div class="field">
+      <label for="posukSelect">Which posuk are you reading?</label>
+      <select id="posukSelect"></select>
+    </div>
   </div>
 
-  <div class="field">
-    <label for="posukSelect">Which posuk are you reading?</label>
-    <select id="posukSelect"></select>
+  <div id="changeSetupLink" style="display:none; text-align:center; margin-bottom:10px;">
+    <a href="#" id="changeSetupBtn" style="font-size:13px; color:var(--brass);">Change name / posuk</a>
   </div>
 
   <div class="display" id="display"></div>
@@ -185,6 +191,9 @@ const downloadBar = document.getElementById('downloadBar');
 const downloadBtn = document.getElementById('downloadBtn');
 const scoreBtn = document.getElementById('scoreBtn');
 const scoreResultEl = document.getElementById('scoreResult');
+const setupFields = document.getElementById('setupFields');
+const changeSetupLink = document.getElementById('changeSetupLink');
+const changeSetupBtn = document.getElementById('changeSetupBtn');
 
 let stream, mediaRecorder, chunks = [];
 let recordedBlob = null;
@@ -214,7 +223,15 @@ function renderDisplay() {
 }
 posukSelect.addEventListener('change', () => {
   renderDisplay();
-  displayEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  setupFields.style.display = "none";
+  changeSetupLink.style.display = "block";
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+});
+changeSetupBtn.addEventListener('click', (e) => {
+  e.preventDefault();
+  setupFields.style.display = "block";
+  changeSetupLink.style.display = "none";
+  window.scrollTo({ top: 0, behavior: 'smooth' });
 });
 renderDisplay();
 
