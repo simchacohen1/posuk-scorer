@@ -132,21 +132,21 @@ def score_words_detailed(expected_text, heard_text, word_threshold=0.75):
     score = round((matched / total) * 100) if total else 0
     return score, word_results
 
-def score_text(posuk_n, actual_text):
-    if posuk_n not in expected:
+def score_text(expected_text, actual_text):
+    if not expected_text:
         return None, []
-    return score_words_detailed(expected[posuk_n], actual_text)
+    return score_words_detailed(expected_text, actual_text)
 
 LOG_PATH = "scores_log.csv"
 
-def log_result(name, posuk_n, score, transcription):
+def log_result(name, perek_n, posuk_n, score, transcription):
     file_exists = os.path.exists(LOG_PATH)
     with open(LOG_PATH, "a", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         if not file_exists:
-            writer.writerow(["timestamp", "student", "posuk", "score", "transcription"])
+            writer.writerow(["timestamp", "student", "perek", "posuk", "score", "transcription"])
         writer.writerow([datetime.datetime.now().isoformat(timespec="seconds"),
-                          name, posuk_n, score, transcription])
+                          name, perek_n, posuk_n, score, transcription])
 
 api_key = os.environ.get("OPENAI_API_KEY")
 if not api_key:
@@ -176,7 +176,15 @@ def score_options():
 @app.route("/score", methods=["POST"])
 def score():
     name = request.form.get("name", "student")
+    perek_n = request.form.get("perek", "")
     posuk_n = int(request.form.get("posuk", "0"))
+    # The student.html app sends the exact text of whatever posuk is on
+    # screen. That's the real source of truth — posuk numbers repeat across
+    # perakim (e.g. every perek has a "posuk 1"), so falling back to the old
+    # hardcoded table (which only ever held Perek 18's text) by posuk number
+    # alone caused wrong-perek text to be used for scoring. Only fall back
+    # to that table if a client ever fails to send posukText.
+    expected_text = request.form.get("posukText", "").strip() or expected.get(posuk_n, "")
     audio_file = request.files.get("audio")
 
     if audio_file is None:
@@ -196,7 +204,7 @@ def score():
             }), 400
 
         try:
-            prompt_hint = expected.get(posuk_n, "")
+            prompt_hint = expected_text
             with open(tmp_path, "rb") as audio_fp:
                 result = client.audio.transcriptions.create(
                     model="whisper-1",
@@ -216,11 +224,11 @@ def score():
     finally:
         os.remove(tmp_path)
 
-    posuk_score, word_results = score_text(posuk_n, transcription)
+    posuk_score, word_results = score_text(expected_text, transcription)
     if posuk_score is None:
         return jsonify({"error": f"No expected text on file for posuk {posuk_n}"}), 400
 
-    log_result(name, posuk_n, posuk_score, transcription)
+    log_result(name, perek_n, posuk_n, posuk_score, transcription)
 
     return jsonify({
         "score": posuk_score,
