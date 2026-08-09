@@ -121,7 +121,7 @@
   <div class="display" id="display"></div>
 
   <div class="controls">
-    <button id="recordBtn">Hold to Record</button>
+    <button id="recordBtn">Press to Record</button>
   </div>
   <div id="status"></div>
   <div id="playback"></div>
@@ -252,7 +252,7 @@ function startRecording() {
   };
   mediaRecorder.start();
   recordBtn.classList.add('recording');
-  recordBtn.textContent = "Recording...";
+  recordBtn.textContent = "Press to Stop";
 }
 
 function stopRecording() {
@@ -260,15 +260,16 @@ function stopRecording() {
   isHolding = false;
   if (mediaRecorder && mediaRecorder.state !== "inactive") mediaRecorder.stop();
   recordBtn.classList.remove('recording');
-  recordBtn.textContent = "Hold to Record";
+  recordBtn.textContent = "Press to Record";
 }
 
-recordBtn.addEventListener('mousedown', startRecording);
-recordBtn.addEventListener('mouseup', stopRecording);
-recordBtn.addEventListener('mouseleave', stopRecording);
-recordBtn.addEventListener('touchstart', (e) => { e.preventDefault(); startRecording(); });
-recordBtn.addEventListener('touchend', (e) => { e.preventDefault(); stopRecording(); });
-recordBtn.addEventListener('touchcancel', (e) => { e.preventDefault(); stopRecording(); });
+recordBtn.addEventListener('click', () => {
+  if (isHolding) {
+    stopRecording();
+  } else {
+    startRecording();
+  }
+});
 
 downloadBtn.addEventListener('click', () => {
   if (!recordedBlob) return;
