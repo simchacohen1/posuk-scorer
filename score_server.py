@@ -69,6 +69,31 @@ expected = {
     33: "וילך הויה כאשר כלה לדבר אל אברהם ואברהם שב למקמו",
 }
 
+def _consonant_skeleton(w):
+    """Shared first stage of word normalization: merges sound-alike
+    consonants (vav/bet/pey, chet/chaf, tav/samech) and strips niqqud and
+    punctuation, but - unlike normalize_word below - always keeps the weak
+    letters (alef/hey/ayin/yud) in place. Used directly by the fusion
+    fallback in score_words_detailed/score_word: when the transcriber
+    blends two adjacent words into one longer token (e.g. "יקח נא" heard
+    back as one word like "וייקחנא"), the short word's letters often
+    still appear intact as a contiguous chunk inside that longer token,
+    but only if weak letters haven't already been stripped out of either
+    side - so containment checks need this less-aggressive form rather
+    than normalize_word's fully-stripped one."""
+    w = w.replace("הויה", "השם")
+    w = w.replace("אדני", "השם")
+    w = w.replace("ה\u05F3", "השם")
+    w = w.replace("ה'", "השם")
+    w = re.sub(r'[^א-ת]', '', w)
+    finals = "םןץףך"
+    regulars = "מנצפכ"
+    w = w.translate(str.maketrans(finals, regulars))
+    w = re.sub(r'[תס]', 'S', w)
+    w = re.sub(r'[בפו]', 'P', w)
+    w = re.sub(r'[חכ]', 'K', w)
+    return w
+
 def normalize_word(w):
     """Normalize a single word for comparison (handles common pronunciation/spelling variation).
 
@@ -81,33 +106,8 @@ def normalize_word(w):
     Fix: only strip the weak letters if something non-empty survives; if
     stripping would erase the whole word, keep the untouched consonant
     skeleton instead so the word still participates in scoring."""
-    w = w.replace("הויה", "השם")
-    w = w.replace("אדני", "השם")
-    # student.html displays/sends the Name as the ה׳ abbreviation (Hebrew geresh,
-    # U+05F3) rather than the spelled-out four letters, since that's the
-    # classroom-standard way to write it. A student reading it aloud says
-    # "Hashem", so without this the word never matched and always showed as
-    # a miss (a red squiggle) even on otherwise-perfect recordings.
-    w = w.replace("ה\u05F3", "השם")
-    w = w.replace("ה'", "השם")  # plain apostrophe, in case that variant is ever used instead
-    w = re.sub(r'[^א-ת]', '', w)
-    finals = "םןץףך"
-    regulars = "מנצפכ"
-    w = w.translate(str.maketrans(finals, regulars))
-    w = re.sub(r'[תס]', 'S', w)
-    # A word-final (or word-internal) vav is often pronounced with a soft
-    # "v" glide almost identical to a vet, so Whisper sometimes transcribes
-    # it as a bet instead - e.g. "אליו" (eylav) coming back as "אליב". Bet
-    # and pey were already merged into one symbol here for the same reason
-    # (they sound alike too), so vav joins that group. This substitution
-    # runs BEFORE the skeleton snapshot below (unlike the old ordering)
-    # so that whichever branch normalize_word ultimately returns - the
-    # stripped form or the full skeleton fallback - reflects the same
-    # merged spelling and the two variants compare as identical.
-    w = re.sub(r'[בפו]', 'P', w)
-    w = re.sub(r'[חכ]', 'K', w)
-    skeleton = w  # consonants only (with sound-alike letters merged), before weak-letter stripping below
-    stripped = re.sub(r'[אהע]', '', w)
+    skeleton = _consonant_skeleton(w)  # consonants only (with sound-alike letters merged), before weak-letter stripping below
+    stripped = re.sub(r'[אהע]', '', skeleton)
     stripped = re.sub(r'[י]', '', stripped)
     # A word that's almost entirely weak letters - like "וירא" (ו,י,ר,א),
     # where only the ר survives - used to be returned as-is once non-empty.
@@ -163,18 +163,33 @@ def score_words_detailed(expected_text, heard_text, word_threshold=0.75):
         elif tag == 'replace':
             span_e = exp_pairs[i1:i2]
             span_h = heard_pairs[j1:j2]
-            for k in range(max(len(span_e), len(span_h))):
-                if k < len(span_e):
-                    e_raw, e_norm = span_e[k]
-                    if k < len(span_h):
-                        h_raw, h_norm = span_h[k]
-                        ratio = SequenceMatcher(None, e_norm, h_norm).ratio()
-                        is_match = ratio >= word_threshold
-                        if is_match:
-                            matched += 1
-                        word_results.append((e_raw, is_match))
-                    else:
-                        word_results.append((e_raw, False))
+            # Pre-compute the less-aggressive skeleton form (weak letters
+            # kept) for every heard token in this mismatched group, for the
+            # fusion fallback below.
+            span_h_skeletons = [_consonant_skeleton(h_raw) for h_raw, _ in span_h]
+            for k in range(len(span_e)):
+                e_raw, e_norm = span_e[k]
+                is_match = False
+                if k < len(span_h):
+                    h_raw, h_norm = span_h[k]
+                    ratio = SequenceMatcher(None, e_norm, h_norm).ratio()
+                    is_match = ratio >= word_threshold
+                if not is_match:
+                    # The transcriber sometimes blends two adjacent short
+                    # words into one longer token (e.g. "יקח נא" heard back
+                    # as a single word like "וייקחנא"), which strands one
+                    # of the two expected words with no positionally-aligned
+                    # heard counterpart even though it really was said. If
+                    # this expected word's letters survive intact as a
+                    # contiguous chunk inside ANY heard token in this same
+                    # group (not just the one at the same position), credit
+                    # it as matched rather than marking it wrong.
+                    e_skel = _consonant_skeleton(e_raw)
+                    if len(e_skel) >= 2 and any(e_skel in hs for hs in span_h_skeletons):
+                        is_match = True
+                if is_match:
+                    matched += 1
+                word_results.append((e_raw, is_match))
         elif tag == 'delete':
             for k in range(i1, i2):
                 word_results.append((exp_pairs[k][0], False))
@@ -308,6 +323,14 @@ def score_word():
     recomputes the overall percentage itself.
     """
     expected_word = request.form.get("word", "").strip()
+    # A bare 1-2 letter word gives Whisper very little to work with in
+    # isolation, unlike full-posuk scoring where a whole sentence of
+    # context helps it land on the right transcription. student.html sends
+    # a small window of the surrounding words (still just re-grading this
+    # one target word, not changing what's checked) so the prompt hint has
+    # some real phrase structure to anchor on instead of one bare word.
+    context = request.form.get("context", "").strip()
+    prompt_hint = context or expected_word
     audio_file = request.files.get("audio")
 
     if not expected_word:
@@ -331,11 +354,7 @@ def score_word():
                     model="whisper-1",
                     file=audio_fp,
                     language="he",
-                    # Prompting with just the single target word (rather
-                    # than the whole posuk) keeps Whisper focused on this
-                    # short clip instead of trying to hallucinate a longer
-                    # phrase around it.
-                    prompt=expected_word,
+                    prompt=prompt_hint,
                 )
             transcription = result.text.strip()
         except Exception as e:
@@ -354,15 +373,25 @@ def score_word():
     MAQAF = "\u05be"
     heard_words = transcription.replace(MAQAF, " ").split()
     target_norm = normalize_word(expected_word)
+    target_skel = _consonant_skeleton(expected_word)
     best_ratio = 0.0
+    fused_match = False
     for hw in heard_words:
         hw_norm = normalize_word(hw)
-        if not hw_norm:
-            continue
-        ratio = SequenceMatcher(None, target_norm, hw_norm).ratio()
-        best_ratio = max(best_ratio, ratio)
+        if hw_norm:
+            ratio = SequenceMatcher(None, target_norm, hw_norm).ratio()
+            best_ratio = max(best_ratio, ratio)
+        # Fusion fallback: the context we send (the target word plus a
+        # couple of neighbors) can end up blended by the transcriber into
+        # one longer token, especially for a short word like this one -
+        # e.g. "יקח נא" heard back as a single word like "וייקחנא". If the
+        # target word's letters survive intact as a contiguous chunk
+        # inside a longer heard token, count that as a match too.
+        hw_skel = _consonant_skeleton(hw)
+        if len(target_skel) >= 2 and target_skel in hw_skel:
+            fused_match = True
 
-    match = best_ratio >= 0.75
+    match = best_ratio >= 0.75 or fused_match
 
     return jsonify({
         "match": match,
