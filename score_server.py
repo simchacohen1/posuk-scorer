@@ -192,6 +192,11 @@ print("Leave this window open. Open assignment_recorder.html in your browser now
 
 app = Flask(__name__)
 
+@app.route("/", methods=["GET"])
+def health_check():
+    # Render (and other hosts) ping this to confirm the service is alive.
+    return "OK", 200
+
 @app.after_request
 def add_cors_headers(resp):
     resp.headers["Access-Control-Allow-Origin"] = "*"
