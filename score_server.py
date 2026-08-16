@@ -100,7 +100,19 @@ def normalize_word(w):
     w = re.sub(r'[חכ]', 'K', w)
     stripped = re.sub(r'[אהע]', '', w)
     stripped = re.sub(r'[וי]', '', stripped)
-    return stripped if stripped else skeleton
+    # A word that's almost entirely weak letters - like "וירא" (ו,י,ר,א),
+    # where only the ר survives - used to be returned as-is once non-empty.
+    # But a single leftover consonant is too thin a signature: (1) it can
+    # collide with a completely different word that also reduces to that
+    # same one letter (e.g. in Perek 18 posuk 1, "אליו" and "האהל" both
+    # collapse to "ל"), which can throw off the word-by-word alignment for
+    # neighboring words too; and (2) it forces an all-or-nothing exact-match
+    # at the token level instead of the fuzzy ratio comparison used for
+    # longer words, so it never gets the partial credit that absorbs a minor
+    # transcription slip. Keep the fuller, unstripped skeleton instead
+    # whenever stripping would leave fewer than 2 consonants, so words like
+    # "וירא" stay distinctive enough to align and fuzzy-match reliably.
+    return stripped if len(stripped) >= 2 else skeleton
 
 def score_words_detailed(expected_text, heard_text, word_threshold=0.75):
     """Word-by-word comparison. Returns (score_percent, [(word, is_match), ...])
