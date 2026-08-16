@@ -94,6 +94,34 @@ def _consonant_skeleton(w):
     w = re.sub(r'[חכ]', 'K', w)
     return w
 
+def skeleton_fuzzy_contains(target_skel, heard_skel, threshold=0.75):
+    """Checks whether target_skel's letters are present, in order, inside
+    heard_skel - close enough to count even if a letter got dropped right
+    at the seam where two words fused together.
+
+    A strict substring check (target_skel in heard_skel) catches most
+    fusions, e.g. "יקח נא" heard as one word "וייקחנא" still contains "נא"
+    intact at the end. But sometimes the fusion also swallows a letter at
+    the boundary - e.g. "פתח האהל" (two words, each starting/ending near an
+    ה/ח sound) heard as one blended word "פסחהאל", which drops one of the
+    repeated ה's where the words run together, so "האהל" no longer appears
+    as an exact substring even though it was clearly said. This slides a
+    window of about the same length as target_skel across heard_skel and
+    accepts it if any window is a close enough fuzzy match, the same way
+    single-word comparisons already tolerate a minor transcription slip."""
+    if len(target_skel) < 2 or not heard_skel:
+        return False
+    if target_skel in heard_skel:
+        return True
+    win_len = len(target_skel)
+    best_ratio = 0.0
+    for wlen in range(max(1, win_len - 1), win_len + 2):
+        for start in range(0, max(1, len(heard_skel) - wlen + 1)):
+            window = heard_skel[start:start + wlen]
+            if window:
+                best_ratio = max(best_ratio, SequenceMatcher(None, target_skel, window).ratio())
+    return best_ratio >= threshold
+
 def normalize_word(w):
     """Normalize a single word for comparison (handles common pronunciation/spelling variation).
 
@@ -185,7 +213,7 @@ def score_words_detailed(expected_text, heard_text, word_threshold=0.75):
                     # group (not just the one at the same position), credit
                     # it as matched rather than marking it wrong.
                     e_skel = _consonant_skeleton(e_raw)
-                    if len(e_skel) >= 2 and any(e_skel in hs for hs in span_h_skeletons):
+                    if any(skeleton_fuzzy_contains(e_skel, hs) for hs in span_h_skeletons):
                         is_match = True
                 if is_match:
                     matched += 1
@@ -388,7 +416,7 @@ def score_word():
         # target word's letters survive intact as a contiguous chunk
         # inside a longer heard token, count that as a match too.
         hw_skel = _consonant_skeleton(hw)
-        if len(target_skel) >= 2 and target_skel in hw_skel:
+        if skeleton_fuzzy_contains(target_skel, hw_skel):
             fused_match = True
 
     match = best_ratio >= 0.75 or fused_match
