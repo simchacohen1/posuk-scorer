@@ -94,12 +94,21 @@ def normalize_word(w):
     finals = "םןץףך"
     regulars = "מנצפכ"
     w = w.translate(str.maketrans(finals, regulars))
-    skeleton = w  # consonants only, before the weak-letter stripping below
     w = re.sub(r'[תס]', 'S', w)
-    w = re.sub(r'[בפ]', 'P', w)
+    # A word-final (or word-internal) vav is often pronounced with a soft
+    # "v" glide almost identical to a vet, so Whisper sometimes transcribes
+    # it as a bet instead - e.g. "אליו" (eylav) coming back as "אליב". Bet
+    # and pey were already merged into one symbol here for the same reason
+    # (they sound alike too), so vav joins that group. This substitution
+    # runs BEFORE the skeleton snapshot below (unlike the old ordering)
+    # so that whichever branch normalize_word ultimately returns - the
+    # stripped form or the full skeleton fallback - reflects the same
+    # merged spelling and the two variants compare as identical.
+    w = re.sub(r'[בפו]', 'P', w)
     w = re.sub(r'[חכ]', 'K', w)
+    skeleton = w  # consonants only (with sound-alike letters merged), before weak-letter stripping below
     stripped = re.sub(r'[אהע]', '', w)
-    stripped = re.sub(r'[וי]', '', stripped)
+    stripped = re.sub(r'[י]', '', stripped)
     # A word that's almost entirely weak letters - like "וירא" (ו,י,ר,א),
     # where only the ר survives - used to be returned as-is once non-empty.
     # But a single leftover consonant is too thin a signature: (1) it can
