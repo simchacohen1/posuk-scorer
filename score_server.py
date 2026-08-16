@@ -292,6 +292,83 @@ def score():
         "words": [{"word": w, "match": ok} for w, ok in word_results],
     })
 
+@app.route("/score_word", methods=["OPTIONS"])
+def score_word_options():
+    return ("", 204)
+
+@app.route("/score_word", methods=["POST"])
+def score_word():
+    """Checks a short recording against a single expected word, for the
+    per-word "redo just this word" feature in student.html. A student who
+    got one or two words flagged wrong in a full-posuk reading can
+    re-record just that word instead of the whole posuk; this endpoint
+    transcribes the short clip and reports whether it now matches, without
+    touching the original full recording/transcript/score at all - the
+    frontend folds the result back into the existing word-by-word list and
+    recomputes the overall percentage itself.
+    """
+    expected_word = request.form.get("word", "").strip()
+    audio_file = request.files.get("audio")
+
+    if not expected_word:
+        return jsonify({"error": "No expected word given"}), 400
+    if audio_file is None:
+        return jsonify({"error": "No audio received"}), 400
+
+    with tempfile.NamedTemporaryFile(suffix=".webm", delete=False) as tmp:
+        audio_file.save(tmp.name)
+        tmp_path = tmp.name
+
+    try:
+        if os.path.getsize(tmp_path) < 1000:
+            return jsonify({
+                "error": "Recording appears empty or too short. Please record again."
+            }), 400
+
+        try:
+            with open(tmp_path, "rb") as audio_fp:
+                result = client.audio.transcriptions.create(
+                    model="whisper-1",
+                    file=audio_fp,
+                    language="he",
+                    # Prompting with just the single target word (rather
+                    # than the whole posuk) keeps Whisper focused on this
+                    # short clip instead of trying to hallucinate a longer
+                    # phrase around it.
+                    prompt=expected_word,
+                )
+            transcription = result.text.strip()
+        except Exception as e:
+            print(f"Transcription error (word fix): {e}")
+            return jsonify({
+                "error": "Could not process this recording. Please try recording again."
+            }), 400
+    finally:
+        os.remove(tmp_path)
+
+    # A one-or-two-word clip often comes back from Whisper with a bit of
+    # extra filler (a repeated syllable, a stray "um", etc.), so rather than
+    # requiring the whole transcription to equal the target word, check
+    # whether ANY word in what was heard is a close enough match to it -
+    # same fuzzy-ratio approach and threshold used for full-posuk scoring.
+    MAQAF = "\u05be"
+    heard_words = transcription.replace(MAQAF, " ").split()
+    target_norm = normalize_word(expected_word)
+    best_ratio = 0.0
+    for hw in heard_words:
+        hw_norm = normalize_word(hw)
+        if not hw_norm:
+            continue
+        ratio = SequenceMatcher(None, target_norm, hw_norm).ratio()
+        best_ratio = max(best_ratio, ratio)
+
+    match = best_ratio >= 0.75
+
+    return jsonify({
+        "match": match,
+        "transcription": transcription,
+    })
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5005))
     app.run(host="0.0.0.0", port=port)
