@@ -127,8 +127,20 @@ def score_words_detailed(expected_text, heard_text, word_threshold=0.75):
     """Word-by-word comparison. Returns (score_percent, [(word, is_match), ...])
     so wrong/missing words actually count as misses instead of being diluted
     across one long normalized string."""
-    exp_raw = expected_text.split()
-    heard_raw = heard_text.split()
+    # A maqaf (the Hebrew hyphen "־", U+05BE) joins two words under one
+    # accent in the printed text - e.g. "מֵעַל־עַבְדֶּךָ" - and Whisper's
+    # transcription sometimes reproduces that joined form even when the
+    # expected text (as typed in the `expected` dict / sent from student.html)
+    # has the same two words separated by a plain space. A maqaf isn't
+    # whitespace, so plain .split() left the heard side with one combined
+    # token where the expected side had two, which misaligned the word-by-
+    # word comparison and made both real words show up as wrong even though
+    # they were read correctly. Replacing the maqaf with a space before
+    # splitting (on both sides, so either could contain one) fixes the
+    # token count to match.
+    MAQAF = "\u05be"
+    exp_raw = expected_text.replace(MAQAF, " ").split()
+    heard_raw = heard_text.replace(MAQAF, " ").split()
     exp_norm = [normalize_word(w) for w in exp_raw]
     heard_norm = [normalize_word(w) for w in heard_raw]
 
