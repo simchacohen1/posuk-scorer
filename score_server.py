@@ -151,6 +151,19 @@ def normalize_word(w):
     # "וירא" stay distinctive enough to align and fuzzy-match reliably.
     return stripped if len(stripped) >= 2 else skeleton
 
+# Words that are so short / phonetically weak that they routinely blend
+# into the word right before or after them in fast connected reading - so
+# much so that Whisper often doesn't (or can't) transcribe them as their
+# own separate token at all. When that happens, the word simply isn't in
+# the heard list at all (a 'delete' in the alignment below), or it gets
+# absorbed into a neighboring token as part of a 'replace'. Either way,
+# flagging it as "mispronounced" punishes normal fluent reading, not an
+# actual mistake - so words in this set get a free pass whenever they show
+# up as a miss. "את" (es) is the main offender; add others here later if
+# the same false-flag shows up for them (e.g. "כי", "גם", "עם").
+ELIDABLE_WORDS = {"את"}
+ELIDABLE_NORMS = {normalize_word(w) for w in ELIDABLE_WORDS}
+
 def score_words_detailed(expected_text, heard_text, word_threshold=0.75):
     """Word-by-word comparison. Returns (score_percent, [(word, is_match), ...])
     so wrong/missing words actually count as misses instead of being diluted
@@ -197,6 +210,14 @@ def score_words_detailed(expected_text, heard_text, word_threshold=0.75):
             span_h_skeletons = [_consonant_skeleton(h_raw) for h_raw, _ in span_h]
             for k in range(len(span_e)):
                 e_raw, e_norm = span_e[k]
+                # Elidable words (like "את") routinely vanish from or blend
+                # into the transcription in fast connected reading - give
+                # them a free pass here rather than requiring the normal
+                # fuzzy-match/fusion checks below to happen to catch them.
+                if e_norm in ELIDABLE_NORMS:
+                    word_results.append((e_raw, True))
+                    matched += 1
+                    continue
                 is_match = False
                 if k < len(span_h):
                     h_raw, h_norm = span_h[k]
@@ -219,8 +240,19 @@ def score_words_detailed(expected_text, heard_text, word_threshold=0.75):
                     matched += 1
                 word_results.append((e_raw, is_match))
         elif tag == 'delete':
+            # An expected word with no heard counterpart at all - most
+            # often because it was genuinely skipped/misread, but also the
+            # shape a truly elidable word (like "את") takes when Whisper
+            # drops it from the transcript entirely instead of blending it
+            # into a neighboring token. Give elidable words a free pass here
+            # too, same as in the 'replace' branch above.
             for k in range(i1, i2):
-                word_results.append((exp_pairs[k][0], False))
+                e_raw, e_norm = exp_pairs[k]
+                if e_norm in ELIDABLE_NORMS:
+                    word_results.append((e_raw, True))
+                    matched += 1
+                else:
+                    word_results.append((e_raw, False))
         # 'insert' = extra word said that wasn't expected -> not counted against/for
 
     score = round((matched / total) * 100) if total else 0
@@ -398,6 +430,17 @@ def score_word():
     # requiring the whole transcription to equal the target word, check
     # whether ANY word in what was heard is a close enough match to it -
     # same fuzzy-ratio approach and threshold used for full-posuk scoring.
+    #
+    # An elidable word (like "את") gets a free pass here too, same as in
+    # score_words_detailed above: if a student is redoing just this one
+    # word and it's one that routinely doesn't survive transcription on its
+    # own, don't make them fight the transcriber to clear it.
+    if normalize_word(expected_word) in ELIDABLE_NORMS:
+        return jsonify({
+            "match": True,
+            "transcription": "",
+        })
+
     MAQAF = "\u05be"
     heard_words = transcription.replace(MAQAF, " ").split()
     target_norm = normalize_word(expected_word)
