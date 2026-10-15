@@ -308,7 +308,12 @@ def score_options():
 def score():
     name = request.form.get("name", "student")
     perek_n = request.form.get("perek", "")
-    posuk_n = int(request.form.get("posuk", "0"))
+    # General reading passages may have no numbered posuk; accept blank as 0.
+    raw_posuk = (request.form.get("posuk") or "0").strip()
+    try:
+        posuk_n = int(raw_posuk)
+    except ValueError:
+        return jsonify({"error": "Invalid posuk number"}), 400
     # The student.html app sends the exact text of whatever posuk is on
     # screen. That's the real source of truth — posuk numbers repeat across
     # perakim (e.g. every perek has a "posuk 1"), so falling back to the old
