@@ -26,7 +26,6 @@ import re
 import csv
 import datetime
 import tempfile
-from difflib import SequenceMatcher
 
 from flask import Flask, request, jsonify
 
@@ -69,199 +68,40 @@ expected = {
     33: "וילך הויה כאשר כלה לדבר אל אברהם ואברהם שב למקמו",
 }
 
-def _consonant_skeleton(w):
-    """Shared first stage of word normalization: merges sound-alike
-    consonants (vav/bet/pey, chet/chaf, tav/samech) and strips niqqud and
-    punctuation, but - unlike normalize_word below - always keeps the weak
-    letters (alef/hey/ayin/yud) in place. Used directly by the fusion
-    fallback in score_words_detailed/score_word: when the transcriber
-    blends two adjacent words into one longer token (e.g. "יקח נא" heard
-    back as one word like "וייקחנא"), the short word's letters often
-    still appear intact as a contiguous chunk inside that longer token,
-    but only if weak letters haven't already been stripped out of either
-    side - so containment checks need this less-aggressive form rather
-    than normalize_word's fully-stripped one."""
-    w = w.replace("הויה", "השם")
-    w = w.replace("אדני", "השם")
-    w = w.replace("ה\u05F3", "השם")
-    w = w.replace("ה'", "השם")
-    w = re.sub(r'[^א-ת]', '', w)
-    finals = "םןץףך"
-    regulars = "מנצפכ"
-    w = w.translate(str.maketrans(finals, regulars))
-    w = re.sub(r'[תס]', 'S', w)
-    w = re.sub(r'[בפו]', 'P', w)
-    w = re.sub(r'[חכ]', 'K', w)
-    return w
+# All word normalization / matching lives in scoring.py so it can be
+# tested offline (python -m unittest test_scoring.py).
+from scoring import score_text, score_single_word
 
-def skeleton_fuzzy_contains(target_skel, heard_skel, threshold=0.75):
-    """Checks whether target_skel's letters are present, in order, inside
-    heard_skel - close enough to count even if a letter got dropped right
-    at the seam where two words fused together.
+# What to give Whisper as its "prompt" hint.
+#   posuk (default) - send the expected posuk text. Whisper copies its
+#                     spelling, which can hide a child's misreading, BUT
+#                     without it whisper-1 turns correct Ashkenazi readings
+#                     into nonsense: re-transcribing 71 teacher-reviewed
+#                     recordings without the hint dropped agreement with the
+#                     teacher from 33/71 to 13/71. So the hint stays.
+#   none            - no hint (for future experiments, e.g. a better model).
+WHISPER_PROMPT_MODE = os.environ.get("WHISPER_PROMPT_MODE", "posuk").strip().lower()
 
-    A strict substring check (target_skel in heard_skel) catches most
-    fusions, e.g. "יקח נא" heard as one word "וייקחנא" still contains "נא"
-    intact at the end. But sometimes the fusion also swallows a letter at
-    the boundary - e.g. "פתח האהל" (two words, each starting/ending near an
-    ה/ח sound) heard as one blended word "פסחהאל", which drops one of the
-    repeated ה's where the words run together, so "האהל" no longer appears
-    as an exact substring even though it was clearly said. This slides a
-    window of about the same length as target_skel across heard_skel and
-    accepts it if any window is a close enough fuzzy match, the same way
-    single-word comparisons already tolerate a minor transcription slip."""
-    if len(target_skel) < 2 or not heard_skel:
-        return False
-    if target_skel in heard_skel:
-        return True
-    win_len = len(target_skel)
-    best_ratio = 0.0
-    for wlen in range(max(1, win_len - 1), win_len + 2):
-        for start in range(0, max(1, len(heard_skel) - wlen + 1)):
-            window = heard_skel[start:start + wlen]
-            if window:
-                best_ratio = max(best_ratio, SequenceMatcher(None, target_skel, window).ratio())
-    return best_ratio >= threshold
+def whisper_prompt(expected_text):
+    return expected_text if WHISPER_PROMPT_MODE == "posuk" else None
 
-def normalize_word(w):
-    """Normalize a single word for comparison (handles common pronunciation/spelling variation).
+# Which OpenAI transcription model to use (Render env TRANSCRIBE_MODEL).
+# Tested 2026-11-06 on 71 teacher-reviewed recordings, with the posuk hint:
+#   whisper-1 (default) - agreed with the teacher on 32/71; never copied a
+#                         deliberately wrong hint (0/71).
+#   gpt-transcribe      - agreed on 59/71 and caught all 3 readings the
+#                         teacher marked wrong, but copied a wrong hint 7/71.
+#   gpt-4o-transcribe   - agreed on 59/71 but copied a wrong hint 15/71 and
+#                         missed 2 of the 3 wrong readings - not recommended.
+TRANSCRIBE_MODEL = os.environ.get("TRANSCRIBE_MODEL", "whisper-1").strip()
 
-    Words made mostly/entirely of the "weak" letters (alef/hey/ayin/vav/yud)
-    - e.g. vayehi, vehaya, haya, Y-H-V-H itself - used to collapse to an empty
-    string once those letters were stripped out below, since they can blend
-    or go silent in speech. An empty normalized word was then dropped from
-    scoring entirely instead of counting as a miss (or a match), so words
-    like "vayehi" silently vanished from the results instead of being graded.
-    Fix: only strip the weak letters if something non-empty survives; if
-    stripping would erase the whole word, keep the untouched consonant
-    skeleton instead so the word still participates in scoring."""
-    skeleton = _consonant_skeleton(w)  # consonants only (with sound-alike letters merged), before weak-letter stripping below
-    stripped = re.sub(r'[אהע]', '', skeleton)
-    stripped = re.sub(r'[י]', '', stripped)
-    # A word that's almost entirely weak letters - like "וירא" (ו,י,ר,א),
-    # where only the ר survives - used to be returned as-is once non-empty.
-    # But a single leftover consonant is too thin a signature: (1) it can
-    # collide with a completely different word that also reduces to that
-    # same one letter (e.g. in Perek 18 posuk 1, "אליו" and "האהל" both
-    # collapse to "ל"), which can throw off the word-by-word alignment for
-    # neighboring words too; and (2) it forces an all-or-nothing exact-match
-    # at the token level instead of the fuzzy ratio comparison used for
-    # longer words, so it never gets the partial credit that absorbs a minor
-    # transcription slip. Keep the fuller, unstripped skeleton instead
-    # whenever stripping would leave fewer than 2 consonants, so words like
-    # "וירא" stay distinctive enough to align and fuzzy-match reliably.
-    return stripped if len(stripped) >= 2 else skeleton
-
-# Words that are so short / phonetically weak that they routinely blend
-# into the word right before or after them in fast connected reading - so
-# much so that Whisper often doesn't (or can't) transcribe them as their
-# own separate token at all. When that happens, the word simply isn't in
-# the heard list at all (a 'delete' in the alignment below), or it gets
-# absorbed into a neighboring token as part of a 'replace'. Either way,
-# flagging it as "mispronounced" punishes normal fluent reading, not an
-# actual mistake - so words in this set get a free pass whenever they show
-# up as a miss. "את" (es) is the main offender; add others here later if
-# the same false-flag shows up for them (e.g. "כי", "גם", "עם").
-ELIDABLE_WORDS = {"את"}
-ELIDABLE_NORMS = {normalize_word(w) for w in ELIDABLE_WORDS}
-
-def score_words_detailed(expected_text, heard_text, word_threshold=0.75):
-    """Word-by-word comparison. Returns (score_percent, [(word, is_match), ...])
-    so wrong/missing words actually count as misses instead of being diluted
-    across one long normalized string."""
-    # A maqaf (the Hebrew hyphen "־", U+05BE) joins two words under one
-    # accent in the printed text - e.g. "מֵעַל־עַבְדֶּךָ" - and Whisper's
-    # transcription sometimes reproduces that joined form even when the
-    # expected text (as typed in the `expected` dict / sent from student.html)
-    # has the same two words separated by a plain space. A maqaf isn't
-    # whitespace, so plain .split() left the heard side with one combined
-    # token where the expected side had two, which misaligned the word-by-
-    # word comparison and made both real words show up as wrong even though
-    # they were read correctly. Replacing the maqaf with a space before
-    # splitting (on both sides, so either could contain one) fixes the
-    # token count to match.
-    MAQAF = "\u05be"
-    exp_raw = expected_text.replace(MAQAF, " ").split()
-    heard_raw = heard_text.replace(MAQAF, " ").split()
-    exp_norm = [normalize_word(w) for w in exp_raw]
-    heard_norm = [normalize_word(w) for w in heard_raw]
-
-    exp_pairs = [(r, n) for r, n in zip(exp_raw, exp_norm) if n]
-    heard_pairs = [(r, n) for r, n in zip(heard_raw, heard_norm) if n]
-
-    exp_norm_list = [n for r, n in exp_pairs]
-    heard_norm_list = [n for r, n in heard_pairs]
-
-    matcher = SequenceMatcher(None, exp_norm_list, heard_norm_list)
-    matched = 0
-    total = len(exp_pairs)
-    word_results = []
-
-    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
-        if tag == 'equal':
-            for k in range(i1, i2):
-                word_results.append((exp_pairs[k][0], True))
-            matched += (i2 - i1)
-        elif tag == 'replace':
-            span_e = exp_pairs[i1:i2]
-            span_h = heard_pairs[j1:j2]
-            # Pre-compute the less-aggressive skeleton form (weak letters
-            # kept) for every heard token in this mismatched group, for the
-            # fusion fallback below.
-            span_h_skeletons = [_consonant_skeleton(h_raw) for h_raw, _ in span_h]
-            for k in range(len(span_e)):
-                e_raw, e_norm = span_e[k]
-                # Elidable words (like "את") routinely vanish from or blend
-                # into the transcription in fast connected reading - give
-                # them a free pass here rather than requiring the normal
-                # fuzzy-match/fusion checks below to happen to catch them.
-                if e_norm in ELIDABLE_NORMS:
-                    word_results.append((e_raw, True))
-                    matched += 1
-                    continue
-                is_match = False
-                if k < len(span_h):
-                    h_raw, h_norm = span_h[k]
-                    ratio = SequenceMatcher(None, e_norm, h_norm).ratio()
-                    is_match = ratio >= word_threshold
-                if not is_match:
-                    # The transcriber sometimes blends two adjacent short
-                    # words into one longer token (e.g. "יקח נא" heard back
-                    # as a single word like "וייקחנא"), which strands one
-                    # of the two expected words with no positionally-aligned
-                    # heard counterpart even though it really was said. If
-                    # this expected word's letters survive intact as a
-                    # contiguous chunk inside ANY heard token in this same
-                    # group (not just the one at the same position), credit
-                    # it as matched rather than marking it wrong.
-                    e_skel = _consonant_skeleton(e_raw)
-                    if any(skeleton_fuzzy_contains(e_skel, hs) for hs in span_h_skeletons):
-                        is_match = True
-                if is_match:
-                    matched += 1
-                word_results.append((e_raw, is_match))
-        elif tag == 'delete':
-            # An expected word with no heard counterpart at all - most
-            # often because it was genuinely skipped/misread, but also the
-            # shape a truly elidable word (like "את") takes when Whisper
-            # drops it from the transcript entirely instead of blending it
-            # into a neighboring token. Give elidable words a free pass here
-            # too, same as in the 'replace' branch above.
-            for k in range(i1, i2):
-                e_raw, e_norm = exp_pairs[k]
-                if e_norm in ELIDABLE_NORMS:
-                    word_results.append((e_raw, True))
-                    matched += 1
-                else:
-                    word_results.append((e_raw, False))
-        # 'insert' = extra word said that wasn't expected -> not counted against/for
-
-    score = round((matched / total) * 100) if total else 0
-    return score, word_results
-
-def score_text(expected_text, actual_text):
-    if not expected_text:
-        return None, []
-    return score_words_detailed(expected_text, actual_text)
+def transcribe(audio_fp, prompt):
+    kwargs = {"model": TRANSCRIBE_MODEL, "file": audio_fp, "language": "he"}
+    if TRANSCRIBE_MODEL == "whisper-1":
+        kwargs["temperature"] = 0
+    if prompt:
+        kwargs["prompt"] = prompt
+    return client.audio.transcriptions.create(**kwargs).text.strip()
 
 LOG_PATH = "scores_log.csv"
 
@@ -340,22 +180,15 @@ def score():
             }), 400
 
         try:
-            prompt_hint = expected_text
             with open(tmp_path, "rb") as audio_fp:
-                result = client.audio.transcriptions.create(
-                    model="whisper-1",
-                    file=audio_fp,
-                    language="he",
-                    prompt=prompt_hint,
-                )
-            transcription = result.text.strip()
+                transcription = transcribe(audio_fp, whisper_prompt(expected_text))
         except Exception as e:
             # Covers API errors, network errors, or any transcription
             # failure - student sees a friendly message, you see the real
             # error in this terminal window.
             print(f"Transcription error: {e}")
             return jsonify({
-        	   "Could not process this recording. Please try recording again."
+                "error": "Could not process this recording. Please try recording again."
             }), 400
     finally:
         os.remove(tmp_path)
@@ -388,14 +221,11 @@ def score_word():
     recomputes the overall percentage itself.
     """
     expected_word = request.form.get("word", "").strip()
-    # A bare 1-2 letter word gives Whisper very little to work with in
-    # isolation, unlike full-posuk scoring where a whole sentence of
-    # context helps it land on the right transcription. student.html sends
-    # a small window of the surrounding words (still just re-grading this
-    # one target word, not changing what's checked) so the prompt hint has
-    # some real phrase structure to anchor on instead of one bare word.
+    # student.html also sends a small window of the surrounding words. It is
+    # the Whisper hint (see WHISPER_PROMPT_MODE) and is also used to
+    # recognise the target fused with a neighbour (e.g. "יקח נא" written as
+    # one token). Only the target word itself can make this pass.
     context = request.form.get("context", "").strip()
-    prompt_hint = context or expected_word
     audio_file = request.files.get("audio")
 
     if not expected_word:
@@ -415,13 +245,7 @@ def score_word():
 
         try:
             with open(tmp_path, "rb") as audio_fp:
-                result = client.audio.transcriptions.create(
-                    model="whisper-1",
-                    file=audio_fp,
-                    language="he",
-                    prompt=prompt_hint,
-                )
-            transcription = result.text.strip()
+                transcription = transcribe(audio_fp, whisper_prompt(context or expected_word))
         except Exception as e:
             print(f"Transcription error (word fix): {e}")
             return jsonify({
@@ -430,44 +254,7 @@ def score_word():
     finally:
         os.remove(tmp_path)
 
-    # A one-or-two-word clip often comes back from Whisper with a bit of
-    # extra filler (a repeated syllable, a stray "um", etc.), so rather than
-    # requiring the whole transcription to equal the target word, check
-    # whether ANY word in what was heard is a close enough match to it -
-    # same fuzzy-ratio approach and threshold used for full-posuk scoring.
-    #
-    # An elidable word (like "את") gets a free pass here too, same as in
-    # score_words_detailed above: if a student is redoing just this one
-    # word and it's one that routinely doesn't survive transcription on its
-    # own, don't make them fight the transcriber to clear it.
-    if normalize_word(expected_word) in ELIDABLE_NORMS:
-        return jsonify({
-            "match": True,
-            "transcription": "",
-        })
-
-    MAQAF = "\u05be"
-    heard_words = transcription.replace(MAQAF, " ").split()
-    target_norm = normalize_word(expected_word)
-    target_skel = _consonant_skeleton(expected_word)
-    best_ratio = 0.0
-    fused_match = False
-    for hw in heard_words:
-        hw_norm = normalize_word(hw)
-        if hw_norm:
-            ratio = SequenceMatcher(None, target_norm, hw_norm).ratio()
-            best_ratio = max(best_ratio, ratio)
-        # Fusion fallback: the context we send (the target word plus a
-        # couple of neighbors) can end up blended by the transcriber into
-        # one longer token, especially for a short word like this one -
-        # e.g. "יקח נא" heard back as a single word like "וייקחנא". If the
-        # target word's letters survive intact as a contiguous chunk
-        # inside a longer heard token, count that as a match too.
-        hw_skel = _consonant_skeleton(hw)
-        if skeleton_fuzzy_contains(target_skel, hw_skel):
-            fused_match = True
-
-    match = best_ratio >= 0.75 or fused_match
+    match = score_single_word(expected_word, transcription, context)
 
     return jsonify({
         "match": match,
