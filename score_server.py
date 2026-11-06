@@ -103,6 +103,26 @@ def transcribe(audio_fp, prompt):
         kwargs["prompt"] = prompt
     return client.audio.transcriptions.create(**kwargs).text.strip()
 
+# OpenAI rejects a recording whose file name doesn't match its real format
+# ("Invalid file format"). Every upload used to be saved as .webm, so
+# Safari / iPhone / iPad recordings (audio/mp4) could never be scored.
+# Keep the type the browser sent, from the upload's file name or MIME type.
+_AUDIO_EXTS = {"webm", "mp4", "m4a", "aac", "ogg", "oga", "mp3", "mpeg", "mpga", "wav", "flac"}
+_MIME_EXTS = {"mp4": "mp4", "aac": "m4a", "ogg": "ogg", "mpeg": "mp3", "wav": "wav", "flac": "flac", "webm": "webm"}
+
+def audio_suffix(audio_file):
+    name = (audio_file.filename or "").lower()
+    ext = name.rsplit(".", 1)[-1] if "." in name else ""
+    if ext == "aac":
+        ext = "m4a"  # OpenAI doesn't accept .aac; Safari's AAC is in an mp4/m4a container
+    if ext in _AUDIO_EXTS:
+        return "." + ext
+    mime = (audio_file.mimetype or "").lower()
+    for key, mapped in _MIME_EXTS.items():
+        if key in mime:
+            return "." + mapped
+    return ".webm"
+
 LOG_PATH = "scores_log.csv"
 
 def log_result(name, perek_n, posuk_n, score, transcription):
@@ -166,7 +186,7 @@ def score():
     if audio_file is None:
         return jsonify({"error": "No audio received"}), 400
 
-    with tempfile.NamedTemporaryFile(suffix=".webm", delete=False) as tmp:
+    with tempfile.NamedTemporaryFile(suffix=audio_suffix(audio_file), delete=False) as tmp:
         audio_file.save(tmp.name)
         tmp_path = tmp.name
 
@@ -233,7 +253,7 @@ def score_word():
     if audio_file is None:
         return jsonify({"error": "No audio received"}), 400
 
-    with tempfile.NamedTemporaryFile(suffix=".webm", delete=False) as tmp:
+    with tempfile.NamedTemporaryFile(suffix=audio_suffix(audio_file), delete=False) as tmp:
         audio_file.save(tmp.name)
         tmp_path = tmp.name
 
