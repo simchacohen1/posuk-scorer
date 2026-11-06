@@ -73,13 +73,14 @@ expected = {
 from scoring import score_text, score_single_word
 
 # What to give Whisper as its "prompt" hint.
-#   none  (default) - no hint. Sending the exact posuk made Whisper write the
-#                     correct words even when a child misread them, so wrong
-#                     readings were scored as right.
-#   posuk           - old behaviour (send the expected text). Set the Render
-#                     environment variable WHISPER_PROMPT_MODE=posuk to go
-#                     back without a code change.
-WHISPER_PROMPT_MODE = os.environ.get("WHISPER_PROMPT_MODE", "none").strip().lower()
+#   posuk (default) - send the expected posuk text. Whisper copies its
+#                     spelling, which can hide a child's misreading, BUT
+#                     without it whisper-1 turns correct Ashkenazi readings
+#                     into nonsense: re-transcribing 71 teacher-reviewed
+#                     recordings without the hint dropped agreement with the
+#                     teacher from 33/71 to 13/71. So the hint stays.
+#   none            - no hint (for future experiments, e.g. a better model).
+WHISPER_PROMPT_MODE = os.environ.get("WHISPER_PROMPT_MODE", "posuk").strip().lower()
 
 def whisper_prompt(expected_text):
     return expected_text if WHISPER_PROMPT_MODE == "posuk" else None
@@ -209,10 +210,9 @@ def score_word():
     """
     expected_word = request.form.get("word", "").strip()
     # student.html also sends a small window of the surrounding words. It is
-    # used only to recognise the target fused with a neighbour (e.g. "יקח נא"
-    # written as one token). It is no longer sent to Whisper as a hint: on a
-    # short clip Whisper tends to echo the hint back, which let any
-    # recording "pass".
+    # the Whisper hint (see WHISPER_PROMPT_MODE) and is also used to
+    # recognise the target fused with a neighbour (e.g. "יקח נא" written as
+    # one token). Only the target word itself can make this pass.
     context = request.form.get("context", "").strip()
     audio_file = request.files.get("audio")
 
