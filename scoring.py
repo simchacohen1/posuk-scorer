@@ -14,24 +14,28 @@ posuk and the transcription are both reduced to a "sound skeleton" first:
   * sound-alike letters merged: ב/פ/ו -> P,  ח/כ/ק -> K,  ת/ס/ט -> S
     (Ashkenazi "sav", and Whisper's habit of writing ק/ט for כ/ת sounds)
   * vowel letters are handled by POSITION, not dropped everywhere:
-      - first letter א/ה/ע -> "H"  (keeps prefixes like ה- "the", א- "I will")
-      - last letter  א/ה/ע -> "A"  (an "a"/"e" ending: נא = נה)
-      - first/last י stays (yud prefix = "he will", yud suffix = "my"/plural)
-      - first/last ו stays (ו- "and", -ו "his"/"they")
+      - first letter א/ה/ע -> "H"
+      - last letter  א/ה/ע/י -> "A"  (a vowel ending: נא = נה, and the
+        Ashkenazi "hinei" written הני = הנה)
+      - first י and first/last ו stay (ו- "and", -ו "his"/"they",
+        י- "he will")
       - in the MIDDLE of a word, א ה ע י ו are dropped, because Whisper
         adds or leaves out these vowel letters freely (אהל / אוהל,
         אברהם / אברם / אברוהם)
+  * "Hashem" misheard as חשם / השן still counts as the Name
 
 Then a word passes only if:
   * its skeleton equals what was heard, or
-  * the word is long (5+ skeleton letters) and differs by at most one
-    letter (two for 8+), with the FIRST and LAST letters still matching -
-    so a dropped/added prefix or suffix (ויאמר vs ויאמרו, אליו vs אלי)
-    is always a mistake.
+  * the word has 3+ skeleton letters and differs by at most one letter
+    (two for 6+), with the FIRST and LAST letters still matching - so a
+    changed ending (ויאמר vs ויאמרו, אליו vs אלי, וירד vs וירא) or a
+    dropped ו "and" is always a mistake.
 
-Limitation (by design, not fixable here): because Whisper outputs no
-vowels, a reading with wrong nikud but the right consonants (וַיַּרְא for
-וַיֵּרָא) cannot be detected by this scorer.
+Limitations (by design, not fixable from Whisper's text):
+  * wrong nikud with the right letters (וַיַּרְא for וַיֵּרָא) passes,
+    because Whisper outputs no reliable vowels;
+  * a dropped ה "the" (אהל for האהל) and בנו for בניו pass, because
+    Whisper itself writes these inconsistently for correct readings.
 """
 
 import re
@@ -84,17 +88,19 @@ def normalize_word(w):
     if m:
         return m.group(1).translate(_MERGE) + SHEM
     letters = letters.translate(_FINALS)
+    # Whisper often mishears "Hashem" as חשם or השן (seen in saved attempts)
+    if len(letters) == 3 and letters[0] in "הח" and letters[1] == "ש" and letters[2] in "מנ":
+        return SHEM
 
     out = []
     last = len(letters) - 1
     for i, ch in enumerate(letters):
         if i == 0:
-            # ה at the start is usually "the" - keep it apart from א/ע
-            out.append("h" if ch == "ה" else ("H" if ch in _GUTTURALS else ch))
+            out.append("H" if ch in _GUTTURALS else ch)
         elif i == last:
-            out.append("A" if ch in _GUTTURALS else ch)
-        elif ch == "י" and i == last - 1 and letters[last] == "ו":
-            out.append(ch)  # -יו ending ("his"): בניו is not בנו
+            # Ashkenazi tzere at the end ("hinei") is written with a yud,
+            # so a final yud is the same vowel ending as final ה/א/ע.
+            out.append("A" if ch in _GUTTURALS or ch == "י" else ch)
         elif ch in _MEDIAL_VOWEL_LETTERS:
             continue
         else:
@@ -113,9 +119,9 @@ def _edit_distance(a, b):
 
 
 def _allowed_edits(n):
-    if n <= 4:
+    if n <= 2:
         return 0
-    if n <= 7:
+    if n <= 5:
         return 1
     return 2
 
@@ -156,7 +162,9 @@ def _fused_match(first_raw, second_raw, heard_raw):
     (יקח נא -> יקחנא, פתח האהל -> פתחהאל). Credit both words only if the
     heard token sounds like the two words TOGETHER - never because one
     short word happens to appear somewhere inside a longer token."""
-    joined = normalize_word(_letters_only(first_raw) + _letters_only(second_raw))
+    if SHEM in normalize_word(first_raw) or SHEM in normalize_word(second_raw):
+        return False  # ה׳ is an abbreviation; its letters can't be joined
+    joined =normalize_word(_letters_only(first_raw) + _letters_only(second_raw))
     return skeletons_match(joined, normalize_word(heard_raw), require_first=False)
 
 
@@ -192,17 +200,16 @@ def score_words_detailed(expected_text, heard_text):
             if e_norm in ELIDABLE_NORMS:
                 results[k] = True
                 continue
-            # positional candidate first, then its neighbours (±1)
-            pos = min(j1 + off, j2 - 1)
-            candidates = [p for p in (pos, pos - 1, pos + 1) if j1 <= p < j2]
+            # positional candidate first, then nearby heard words (up to 3
+            # away), since Whisper's word count rarely lines up exactly
+            pos = j1 + off
+            candidates = sorted((p for p in range(j1, j2) if abs(p - pos) <= 3),
+                                key=lambda p: abs(p - pos))
             for p in candidates:
                 if p in used:
                     continue
-                if skeletons_match(e_norm, heard_pairs[p][1]):
-                    results[k] = True
-                    used.add(p)
-                    break
-                # fused with the next / previous expected word?
+                # fused with the next / previous expected word? Checked
+                # first, so a long word doesn't claim a two-word token alone
                 h_raw = heard_pairs[p][0]
                 if k + 1 < total and _fused_match(e_raw, exp_pairs[k + 1][0], h_raw):
                     results[k] = results[k + 1] = True
@@ -210,6 +217,10 @@ def score_words_detailed(expected_text, heard_text):
                     break
                 if k - 1 >= 0 and _fused_match(exp_pairs[k - 1][0], e_raw, h_raw):
                     results[k] = results[k - 1] = True
+                    used.add(p)
+                    break
+                if skeletons_match(e_norm, heard_pairs[p][1]):
+                    results[k] = True
                     used.add(p)
                     break
 

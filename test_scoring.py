@@ -30,7 +30,7 @@ class CorrectReadingsStillPass(unittest.TestCase):
     def test_sound_alike_letters(self):
         # Ashkenazi sav, and Whisper writing ק/ט for כ/ת sounds
         for exp, heard in [("כִּי", "קי"), ("בַּיִת", "בייס"), ("תַּחַת", "טחת"),
-                           ("נָא", "נה"), ("אֶל", "על")]:
+                           ("נָא", "נה"), ("אֶל", "על"), ("הִנֵּה", "הני")]:
             with self.subTest(exp=exp, heard=heard):
                 self.assertTrue(words_match(exp, heard))
 
@@ -49,6 +49,16 @@ class CorrectReadingsStillPass(unittest.TestCase):
     def test_two_words_written_as_one(self):
         self.assertEqual(misses("יֻקַּח נָא מְעַט מַיִם", "יוקחנא מעט מים"), [])
         self.assertEqual(misses("פֶּתַח הָאֹהֶל", "פסחהאל"), [])
+
+    def test_hashem_misheard(self):
+        # spellings Whisper produced for "Hashem" in saved attempts
+        for heard in ["חשם", "השן"]:
+            with self.subTest(heard=heard):
+                self.assertTrue(words_match("ה׳", heard))
+
+    def test_two_words_found_a_little_out_of_place(self):
+        self.assertEqual(misses("וְנִבְרְכוּ בוֹ כֹּל גּוֹיֵי הָאָרֶץ",
+                                "ונברכובו כל גויי הארץ"), [])
 
     def test_es_is_free(self):
         self.assertEqual(misses("אֶת בָּנָיו", "בניו"), [])
@@ -72,9 +82,9 @@ class WrongReadingsAreCaught(unittest.TestCase):
             ("וַיֵּרֶד", "וירא"),      # went down -> appeared
             ("שְׁלֹשָׁה", "שלש"),
             ("וַיֵּרָא", "ירא"),       # dropped the vav
-            ("הָאֹהֶל", "אוהל"),       # dropped "the"
+            ("אֵלָיו", "אלה"),
+            ("וַיֵּשֶׁב", "וישר"),
             ("אָשׁוּב", "שוב"),        # dropped "I will"
-            ("בָּנָיו", "בנו"),
             ("עֲנָוִים", "עני"),
         ]
         for exp, heard in pairs:
