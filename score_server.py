@@ -82,6 +82,10 @@ def _consonant_skeleton(w):
     side - so containment checks need this less-aggressive form rather
     than normalize_word's fully-stripped one."""
     w = w.replace("הויה", "השם")
+    # Whisper writes the spoken Name (Ado-noy) either short (אדני) or with a
+    # vav (אדוני). Both must count as the Name, or a correct reading of every
+    # posuk with ה׳ loses a word.
+    w = w.replace("אדוני", "השם")
     w = w.replace("אדני", "השם")
     w = w.replace("ה\u05F3", "השם")
     w = w.replace("ה'", "השם")
@@ -258,7 +262,16 @@ def score_words_detailed(expected_text, heard_text, word_threshold=0.75):
     score = round((matched / total) * 100) if total else 0
     return score, word_results
 
+# Sefaria ends some pesukim with a section-break marker, {פ} or {ס}. It is
+# layout, not a word to read, but it was being scored as a word the student
+# skipped (a perfect reading of Bereishis 19:38 scored 94%).
+SECTION_MARKER = re.compile(r'\{\s*[\u05e4\u05e1]\s*\}')
+
+def strip_section_markers(text):
+    return re.sub(r'\s+', ' ', SECTION_MARKER.sub(' ', text or '')).strip()
+
 def score_text(expected_text, actual_text):
+    expected_text = strip_section_markers(expected_text)
     if not expected_text:
         return None, []
     return score_words_detailed(expected_text, actual_text)
