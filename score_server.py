@@ -85,8 +85,20 @@ WHISPER_PROMPT_MODE = os.environ.get("WHISPER_PROMPT_MODE", "posuk").strip().low
 def whisper_prompt(expected_text):
     return expected_text if WHISPER_PROMPT_MODE == "posuk" else None
 
+# Which OpenAI transcription model to use (Render env TRANSCRIBE_MODEL).
+# Tested 2026-11-06 on 71 teacher-reviewed recordings, with the posuk hint:
+#   whisper-1 (default) - agreed with the teacher on 32/71; never copied a
+#                         deliberately wrong hint (0/71).
+#   gpt-transcribe      - agreed on 59/71 and caught all 3 readings the
+#                         teacher marked wrong, but copied a wrong hint 7/71.
+#   gpt-4o-transcribe   - agreed on 59/71 but copied a wrong hint 15/71 and
+#                         missed 2 of the 3 wrong readings - not recommended.
+TRANSCRIBE_MODEL = os.environ.get("TRANSCRIBE_MODEL", "whisper-1").strip()
+
 def transcribe(audio_fp, prompt):
-    kwargs = {"model": "whisper-1", "file": audio_fp, "language": "he", "temperature": 0}
+    kwargs = {"model": TRANSCRIBE_MODEL, "file": audio_fp, "language": "he"}
+    if TRANSCRIBE_MODEL == "whisper-1":
+        kwargs["temperature"] = 0
     if prompt:
         kwargs["prompt"] = prompt
     return client.audio.transcriptions.create(**kwargs).text.strip()
