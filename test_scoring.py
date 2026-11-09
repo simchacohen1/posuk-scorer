@@ -104,7 +104,89 @@ class WrongReadingsAreCaught(unittest.TestCase):
                          ["וַיֹּאמְרוּ", "שָׂרָה"])
 
 
+class PronunciationAndSpellingStillPass(unittest.TestCase):
+    """Correct readings that the old rules failed or passed only by luck."""
+
+    def test_sin_heard_as_samech(self):
+        for exp, heard in [("שָׂרָה", "סרה"), ("יִשְׂרָאֵל", "יסראל"),
+                           ("עֵשָׂו", "עסו"), ("וַיִּשָּׂא", "ויסא"),
+                           ("שָׂרָה", "שרה")]:
+            with self.subTest(exp=exp, heard=heard):
+                self.assertTrue(words_match(exp, heard))
+
+    def test_elokim(self):
+        for exp, heard in [("אֱלֹהִים", "אלוקים"), ("וֵאלֹהִים", "ואלוקים"),
+                           ("הָאֱלֹהִים", "האלוקים"), ("אֱלֹהֶיךָ", "אלוקיך"),
+                           ("אֱלֹהֵינוּ", "אלוקינו")]:
+            with self.subTest(exp=exp, heard=heard):
+                self.assertTrue(words_match(exp, heard))
+
+    def test_full_or_short_spelling(self):
+        for exp, heard in [("כָּל", "כול"), ("אֹתוֹ", "אותו"), ("מְאֹד", "מאוד"),
+                           ("חַוָּה", "חווה"), ("רְאוּבֵן", "רובן"),
+                           ("צָהֳרַיִם", "צהריים"), ("לִפְנֵי", "לפניי"),
+                           ("אָבִיו", "אביב")]:
+            with self.subTest(exp=exp, heard=heard):
+                self.assertTrue(words_match(exp, heard))
+
+    def test_whole_posuk_ashkenazi_reading(self):
+        exp = "בְּרֵאשִׁית בָּרָא אֱלֹהִים אֵת הַשָּׁמַיִם וְאֵת הָאָרֶץ"
+        self.assertEqual(score_text(exp, "בראשיס ברא אלוקים עס השמיים ואס הארץ")[0], 100)
+
+
+class NearMissesAreCaught(unittest.TestCase):
+    """A one-letter change in a short word is usually a different word.
+    The old one-letter allowance passed all of these."""
+
+    def test_different_short_words(self):
+        pairs = [
+            ("וַיִּשְׁלַח", "וישכח"),   # sent -> forgot
+            ("יָדַע", "ירא"),           # knew -> feared
+            ("וַיֵּלֶךְ", "וימלך"),     # went -> reigned
+            ("וַיִּשְׁכַּב", "וישב"),   # lay down -> sat
+            ("וַיִּזְכֹּר", "וישכר"),
+            ("וַיִּשְׁלַח", "ויסלח"),   # shin is not a sin
+            ("מִשְׁפָּחָה", "מספחה"),
+        ]
+        for exp, heard in pairs:
+            with self.subTest(exp=exp, heard=heard):
+                self.assertFalse(words_match(exp, heard))
+
+    def test_changed_suffix_on_a_long_word(self):
+        self.assertFalse(words_match("אֲבוֹתֵיכֶם", "אבותיהם"))   # your -> their
+        self.assertFalse(words_match("אֲבוֹתֵיהֶם", "אבותיכם"))
+
+
+class SilenceAndUnrelatedSpeech(unittest.TestCase):
+    P3 = "בְּרֵאשִׁית בָּרָא אֱלֹהִים אֵת הַשָּׁמַיִם וְאֵת הָאָרֶץ"
+
+    def test_silence_scores_zero(self):
+        # את used to be free even when nothing was read (14%)
+        self.assertEqual(score_text(self.P3, "")[0], 0)
+
+    def test_unrelated_speech(self):
+        # "umm" used to match אלהים; this scored 29%
+        self.assertEqual(score_text(self.P3, "אממ אני לא יודע")[0], 0)
+        self.assertEqual(score_text(self.P3, "ויאמר משה אל העם לא תיראו")[0], 0)
+
+    def test_half_the_posuk(self):
+        self.assertEqual(score_text(self.P3, "בראשית ברא אלוקים")[0], 43)  # 3 of 7
+
+    def test_es_still_free_inside_a_reading(self):
+        self.assertEqual(misses("וַיִּקַּח אַבְרָהָם אֶת הָעֵצִים",
+                                "ויקח אברהם העצים"), [])
+
+
 class RedoOneWord(unittest.TestCase):
+    def test_es_needs_to_be_heard(self):
+        self.assertFalse(score_single_word("אֶת", ""))
+        self.assertFalse(score_single_word("אֶת", "שלום"))
+        self.assertTrue(score_single_word("אֶת", "את"))
+
+    def test_sin_and_elokim(self):
+        self.assertTrue(score_single_word("שָׂרָה", "סרה"))
+        self.assertTrue(score_single_word("אֱלֹהִים", "אלוקים"))
+
     def test_target_heard(self):
         self.assertTrue(score_single_word("נָא", "נה"))
 
@@ -125,6 +207,32 @@ class Normalization(unittest.TestCase):
 
     def test_punctuation_ignored(self):
         self.assertEqual(normalize_word("הַיּֽוֹם׃"), normalize_word("היום"))
+
+
+class WholePosukGrading(unittest.TestCase):
+    """Realistic whole-posuk transcripts: each answer type gets a fair score."""
+    A = "וַיֹּאמֶר אֵלָיו אַיֵּה שָׂרָה אִשְׁתֶּךָ וַיֹּאמֶר הִנֵּה בָאֹהֶל"
+    F = "וַיִּשְׁלַח יַעֲקֹב מַלְאָכִים לְפָנָיו אֶל עֵשָׂו אָחִיו"
+
+    def test_correct_readings_score_100(self):
+        for heard in ["ויאמר אליו איה שרה אשתך ויאמר הנה באהל",
+                      "ויאמר אליו אייה סורה אישטעך ויאמר הינע באויהל",  # Ashkenazi
+                      "ויאמר אליו איהשרה אשתך ויאמר הנהבאהל",          # fused
+                      "ויאמרו ויאמר אליו איה שרה אשתך ויאמר הנה באהל",  # self-corrected
+                      self.A]:                                           # copied nikud
+            with self.subTest(heard=heard):
+                self.assertEqual(score_text(self.A, heard)[0], 100)
+
+    def test_one_wrong_word_is_marked(self):
+        self.assertEqual(misses(self.F, "וישכח יעקב מלאכים לפניו אל עשו אחיו"), ["וַיִּשְׁלַח"])
+        self.assertEqual(misses(self.F, "וישלח יעקב מלאכים לפניו אל עשו אחי"), ["אָחִיו"])
+        self.assertEqual(misses(self.A, "ויאמרו אליו איה שרה אשתך ויאמר הנה באהל"), ["וַיֹּאמֶר"])
+
+    def test_partial_and_wrong(self):
+        self.assertEqual(score_text(self.F, "וישלח יעקב מלאכים")[0], 43)
+        self.assertEqual(score_text(self.F, "")[0], 0)
+        self.assertEqual(score_text(self.F, "אה אה אה")[0], 0)
+        self.assertLessEqual(score_text(self.F, "ויאמר אליו איה שרה אשתך ויאמר הנה באהל")[0], 15)
 
 
 if __name__ == "__main__":
