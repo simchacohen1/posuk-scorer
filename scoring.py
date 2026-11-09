@@ -23,13 +23,24 @@ posuk and the transcription are both reduced to a "sound skeleton" first:
         adds or leaves out these vowel letters freely (אהל / אוהל,
         אברהם / אברם / אברוהם)
   * "Hashem" misheard as חשם / השן still counts as the Name
+  * "Elokim" (אלוקים, אלקינו...) is the same word as אלהים, אלהינו...
+  * a שׂ (sin, marked by its dot in the posuk) may be heard as ש or ס;
+    a שׁ (shin) heard as ס is still a mistake
 
 Then a word passes only if:
   * its skeleton equals what was heard, or
-  * the word has 3+ skeleton letters and differs by at most one letter
-    (two for 6+), with the FIRST and LAST letters still matching - so a
-    changed ending (ויאמר vs ויאמרו, אליו vs אלי, וירד vs וירא) or a
-    dropped ו "and" is always a mistake.
+  * the word has 5+ skeleton letters and differs by one added or missing
+    letter (5-6 letters), or by one changed letter / two added or missing
+    letters (7+), with the FIRST letter and LAST TWO letters still
+    matching - so a changed ending (ויאמר vs ויאמרו, אבותיכם vs
+    אבותיהם) or a dropped ו "and" is always a mistake.
+  * Short words (4 skeleton letters or fewer) must match exactly: one
+    changed letter there is usually a different word (וישלח "sent" vs
+    וישכח "forgot", וילך vs וימלך, ידע vs ירא).
+
+את is not required (fast readers blend it into the next word) - but only
+when the student read the words on both sides of it, so silence, an
+unrelated sentence, or stopping just before it gets no credit for it.
 
 Limitations (by design, not fixable from Whisper's text):
   * wrong nikud with the right letters (וַיַּרְא for וַיֵּרָא) passes,
@@ -69,10 +80,29 @@ _MERGE = str.maketrans({
 })
 _GUTTURALS = "אהע"
 _MEDIAL_VOWEL_LETTERS = set("אהעיו")
+SIN_DOT = chr(0x05C2)  # the dot that makes ש a sin (שׂ)
+_NIKUD_AND_TROP = chr(0x0591) + "-" + chr(0x05C7)
+# "Elokim": the ה of אלהים / אלהינו read (and written) as ק.
+_ELOKIM_RE = re.compile(r'אלו?ק')
 
 
 def _letters_only(w):
     return re.sub(r'[^א-ת]', '', w)
+
+
+def _sin_as_samech(w):
+    """The word with every dotted sin (שׂ) written as ס."""
+    return re.sub('ש([' + _NIKUD_AND_TROP + ']*)', lambda m: ('ס' if SIN_DOT in m.group(1) else 'ש') + m.group(1), w)
+
+
+def word_variants(w):
+    """All skeletons a word may be read as: just normalize_word(w), plus
+    the ס reading when the word has a dotted sin."""
+    first = normalize_word(w)
+    if SIN_DOT not in (w or ""):
+        return (first,)
+    second = normalize_word(_sin_as_samech(w))
+    return (first,) if second == first else (first, second)
 
 
 def normalize_word(w):
@@ -87,7 +117,7 @@ def normalize_word(w):
     m = _SHEM_RE.match(letters)
     if m:
         return m.group(1).translate(_MERGE) + SHEM
-    letters = letters.translate(_FINALS)
+    letters = _ELOKIM_RE.sub('אלה', letters.translate(_FINALS))
     # Whisper often mishears "Hashem" as חשם or השן (seen in saved attempts)
     if len(letters) == 3 and letters[0] in "הח" and letters[1] == "ש" and letters[2] in "מנ":
         return SHEM
@@ -108,20 +138,21 @@ def normalize_word(w):
     return "".join(out).translate(_MERGE)
 
 
-def _edit_distance(a, b):
-    prev = list(range(len(b) + 1))
-    for i, ca in enumerate(a, 1):
-        cur = [i]
+def _indel_distance(a, b):
+    """Letters added + letters missing (a changed letter counts as 2)."""
+    prev = [0] * (len(b) + 1)
+    for ca in a:
+        cur = [0]
         for j, cb in enumerate(b, 1):
-            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)))
+            cur.append(prev[j - 1] + 1 if ca == cb else max(prev[j], cur[j - 1]))
         prev = cur
-    return prev[-1]
+    return len(a) + len(b) - 2 * prev[-1]
 
 
 def _allowed_edits(n):
-    if n <= 2:
+    if n <= 4:
         return 0
-    if n <= 5:
+    if n <= 6:
         return 1
     return 2
 
@@ -135,15 +166,20 @@ def skeletons_match(expected_norm, heard_norm, require_first=True):
     allowed = _allowed_edits(len(expected_norm))
     if not allowed:
         return False
-    if expected_norm[-1] != heard_norm[-1]:
+    if expected_norm[-2:] != heard_norm[-2:]:
         return False
     if require_first and expected_norm[0] != heard_norm[0]:
         return False
-    return _edit_distance(expected_norm, heard_norm) <= allowed
+    return _indel_distance(expected_norm, heard_norm) <= allowed
+
+
+def variants_match(expected_variants, heard_variants, require_first=True):
+    return any(skeletons_match(e, h, require_first)
+               for e in expected_variants for h in heard_variants)
 
 
 def words_match(expected_word, heard_word):
-    return skeletons_match(normalize_word(expected_word), normalize_word(heard_word))
+    return variants_match(word_variants(expected_word), word_variants(heard_word))
 
 
 # Words that are so short / phonetically weak that they routinely blend
@@ -164,8 +200,13 @@ def _fused_match(first_raw, second_raw, heard_raw):
     short word happens to appear somewhere inside a longer token."""
     if SHEM in normalize_word(first_raw) or SHEM in normalize_word(second_raw):
         return False  # ה׳ is an abbreviation; its letters can't be joined
-    joined =normalize_word(_letters_only(first_raw) + _letters_only(second_raw))
-    return skeletons_match(joined, normalize_word(heard_raw), require_first=False)
+    joined = word_variants(_sin_dots_kept(first_raw) + _sin_dots_kept(second_raw))
+    return variants_match(joined, word_variants(heard_raw), require_first=False)
+
+
+def _sin_dots_kept(w):
+    """Letters of a word, keeping the sin dot so word_variants can see it."""
+    return re.sub('[^א-ת' + SIN_DOT + ']', '', w)
 
 
 def score_words_detailed(expected_text, heard_text):
@@ -174,9 +215,12 @@ def score_words_detailed(expected_text, heard_text):
     exp_pairs = [(r, n) for r, n in exp_pairs if n]
     heard_pairs = [(r, normalize_word(r)) for r in _split(heard_text)]
     heard_pairs = [(r, n) for r, n in heard_pairs if n]
+    exp_variants = [word_variants(r) for r, _ in exp_pairs]
+    heard_variants = [word_variants(r) for r, _ in heard_pairs]
 
     total = len(exp_pairs)
     results = [False] * total
+    elided = []  # את words not heard; free only if both neighbours were read
     matcher = SequenceMatcher(None, [n for _, n in exp_pairs],
                               [n for _, n in heard_pairs], autojunk=False)
 
@@ -198,7 +242,7 @@ def score_words_detailed(expected_text, heard_text):
             if results[k]:
                 continue
             if e_norm in ELIDABLE_NORMS:
-                results[k] = True
+                elided.append(k)
                 continue
             # positional candidate first, then nearby heard words (up to 3
             # away), since Whisper's word count rarely lines up exactly
@@ -219,10 +263,17 @@ def score_words_detailed(expected_text, heard_text):
                     results[k] = results[k - 1] = True
                     used.add(p)
                     break
-                if skeletons_match(e_norm, heard_pairs[p][1]):
+                if variants_match(exp_variants[k], heard_variants[p]):
                     results[k] = True
                     used.add(p)
                     break
+
+    # A blended את sits between two words the student read; one stopping
+    # right before it, or reading nothing, gets no credit for it.
+    for k in elided:
+        neighbours = [n for n in (k - 1, k + 1) if 0 <= n < total]
+        if not results[k] and neighbours and all(results[n] for n in neighbours):
+            results[k] = True
 
     matched = sum(results)
     score = round((matched / total) * 100) if total else 0
@@ -241,10 +292,10 @@ def score_single_word(expected_word, heard_text, context=""):
     the target word, or the target fused with its neighbour from the
     context window that student.html sends."""
     target_norm = normalize_word(expected_word)
-    if target_norm in ELIDABLE_NORMS:
-        return True
     heard = [h for h in _split(heard_text) if normalize_word(h)]
-    if any(skeletons_match(target_norm, normalize_word(h)) for h in heard):
+    # No free pass for את here: the student is saying just this word, so
+    # silence or a different word must not count.
+    if any(words_match(expected_word, h) for h in heard):
         return True
     ctx = _split(context)
     idx = next((i for i, w in enumerate(ctx) if normalize_word(w) == target_norm), None)
