@@ -209,5 +209,31 @@ class Normalization(unittest.TestCase):
         self.assertEqual(normalize_word("הַיּֽוֹם׃"), normalize_word("היום"))
 
 
+class WholePosukGrading(unittest.TestCase):
+    """Realistic whole-posuk transcripts: each answer type gets a fair score."""
+    A = "וַיֹּאמֶר אֵלָיו אַיֵּה שָׂרָה אִשְׁתֶּךָ וַיֹּאמֶר הִנֵּה בָאֹהֶל"
+    F = "וַיִּשְׁלַח יַעֲקֹב מַלְאָכִים לְפָנָיו אֶל עֵשָׂו אָחִיו"
+
+    def test_correct_readings_score_100(self):
+        for heard in ["ויאמר אליו איה שרה אשתך ויאמר הנה באהל",
+                      "ויאמר אליו אייה סורה אישטעך ויאמר הינע באויהל",  # Ashkenazi
+                      "ויאמר אליו איהשרה אשתך ויאמר הנהבאהל",          # fused
+                      "ויאמרו ויאמר אליו איה שרה אשתך ויאמר הנה באהל",  # self-corrected
+                      self.A]:                                           # copied nikud
+            with self.subTest(heard=heard):
+                self.assertEqual(score_text(self.A, heard)[0], 100)
+
+    def test_one_wrong_word_is_marked(self):
+        self.assertEqual(misses(self.F, "וישכח יעקב מלאכים לפניו אל עשו אחיו"), ["וַיִּשְׁלַח"])
+        self.assertEqual(misses(self.F, "וישלח יעקב מלאכים לפניו אל עשו אחי"), ["אָחִיו"])
+        self.assertEqual(misses(self.A, "ויאמרו אליו איה שרה אשתך ויאמר הנה באהל"), ["וַיֹּאמֶר"])
+
+    def test_partial_and_wrong(self):
+        self.assertEqual(score_text(self.F, "וישלח יעקב מלאכים")[0], 43)
+        self.assertEqual(score_text(self.F, "")[0], 0)
+        self.assertEqual(score_text(self.F, "אה אה אה")[0], 0)
+        self.assertLessEqual(score_text(self.F, "ויאמר אליו איה שרה אשתך ויאמר הנה באהל")[0], 15)
+
+
 if __name__ == "__main__":
     unittest.main()
